@@ -20,36 +20,71 @@ dem_dir = "Data/DEM"
 paired_data = pair_avalanche_with_sar_and_dem(avalanche_dir, sar_dir, dem_dir)
 
 
-def process_in_batches(data, batch_size=10, normalize_func=None):
-    for i in range(0, len(data), batch_size):
-        batch = data[i:i+batch_size]
-        for item in batch:
-            if normalize_func:
-                item['sar_data'] = normalize_func(item['sar_data'])
-        yield batch
-
-# Process SAR data
-for batch in process_in_batches(paired_data, batch_size=10, normalize_func=normalize_sar):
-    pass
-
-# Process DEM data
-for batch in process_in_batches(paired_data, batch_size=10, normalize_func=normalize_dem):
-    pass
-# Normalize SAR and DEM
-for item in paired_data:
-    item['sar_data'] = normalize_sar(item['sar_data'])
-    item['dem_data'] = normalize_dem(item['dem_data'])
-
-
-
-
-
-
 import numpy as np
-for i, item in enumerate(paired_data[:5]):
-    print(f"Item {i}:")
-    print(f"Min Value: {item['sar_data'].min()}, Max Value: {item['sar_data'].max()}")
-    print(f"Min Value: {item['dem_data'].min()}, Max Value: {item['dem_data'].max()}")
+from typing import List, Dict, Any
+
+
+def normalize_sar_in_chunks(data: np.ndarray, chunk_size: int = 1000) -> np.ndarray:
+    h, w = data.shape
+    normalized = np.zeros_like(data, dtype=np.float32)
+    epsilon = 1e-8  # Add this line at the beginning of the function
+    for i in range(0, h, chunk_size):
+        chunk = data[i : i + chunk_size, :]
+        print(f"Chunk min: {chunk.min()}, max: {chunk.max()}")
+
+        chunk = chunk.astype(np.float32)  # Ensure float32 type
+        chunk_shifted = chunk - chunk.min() + 1  # Shift to positive values
+        log_chunk = np.log10(chunk_shifted)
+        print(f"Log chunk min: {log_chunk.min()}, max: {log_chunk.max()}")
+        min_val, max_val = log_chunk.min(), log_chunk.max()
+        if min_val == max_val:
+            normalized[i : i + chunk_size, :] = 0
+        else:
+            # Replace this line
+            normalized[i : i + chunk_size, :] = (log_chunk - min_val) / (
+                max_val - min_val + epsilon
+            )
+        print(
+            f"Normalized chunk min: {normalized[i:i+chunk_size, :].min()}, max: {normalized[i:i+chunk_size, :].max()}"
+        )
+    return normalized
+
+
+def normalize_dem_in_chunks(data: np.ndarray, chunk_size: int = 1000) -> np.ndarray:
+    h, w = data.shape
+    normalized = np.zeros_like(data, dtype=np.float32)
+    for i in range(0, h, chunk_size):
+        chunk = data[i : i + chunk_size, :]
+        min_val, max_val = chunk.min(), chunk.max()
+        normalized[i : i + chunk_size, :] = (chunk - min_val) / (max_val - min_val)
+    return normalized
+
+
+def process_in_batches(
+    data: List[Dict[str, Any]], batch_size: int = 10
+) -> List[Dict[str, Any]]:
+    processed_data = []
+    for i in range(0, len(data), batch_size):
+        batch = data[i : i + batch_size]
+        for item in batch:
+            item["sar_data"] = normalize_sar_in_chunks(item["sar_data"])
+            item["dem_data"] = normalize_dem_in_chunks(item["dem_data"])
+        processed_data.extend(batch)
+    return processed_data
+
+
+# Main processing function
+def process_paired_data(paired_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return process_in_batches(paired_data, batch_size=10)
+
+
+processed_data = process_paired_data(paired_data)
+
+
+print(f"Processed {len(processed_data)} items")
+print(processed_data[0]["sar_data"][:10, :10])  # Print first 10x10 elements
+
+
 for pair in paired_data:
     avalanche_data = pair["avalanche_data"]
     binary_mask = avalanche_data > 0
@@ -163,9 +198,9 @@ print(f"First chip sample (5x5):\n{sar_chips[0, :5, :5]}")
 
 from skimage.util import view_as_windows
 
+
 def create_chips(data, chip_size=128):
     return view_as_windows(data, (chip_size, chip_size), step=chip_size)
-
 
 
 def create_chips_generator(data, chip_size=128):
@@ -174,31 +209,27 @@ def create_chips_generator(data, chip_size=128):
     print(f"Input data range: {data.min()} to {data.max()}")
     for i in range(0, h - chip_size + 1, chip_size):
         for j in range(0, w - chip_size + 1, chip_size):
-            chip = np.array(data[i:i+chip_size, j:j+chip_size], copy=True)
-            print(f"Chip at ({i},{j}): shape {chip.shape}, dtype {chip.dtype}, range {chip.min()} to {chip.max()}")
+            chip = np.array(data[i : i + chip_size, j : j + chip_size], copy=True)
+            print(
+                f"Chip at ({i},{j}): shape {chip.shape}, dtype {chip.dtype}, range {chip.min()} to {chip.max()}"
+            )
             yield chip
 
 
-first_128x128_before = paired_data[0]['sar_data'][:128, :128]
+first_128x128_before = paired_data[0]["sar_data"][:128, :128]
 print(first_128x128_before)
 sar_chips = create_chips_generator(first_128x128_before, chip_size=128)
 first_chip_after = next(sar_chips)
 print(f"Shape before chipping: {first_128x128_before.shape}")
 print(f"Shape after chipping: {first_chip_after.shape}")
-print(f"Range before chipping: {first_128x128_before.min()} to {first_128x128_before.max()}")
+print(
+    f"Range before chipping: {first_128x128_before.min()} to {first_128x128_before.max()}"
+)
 print(f"Range after chipping: {first_chip_after.min()} to {first_chip_after.max()}")
 
 
-
-
-
-
-
-
-
-
-
 import albumentations as A
+
 
 def augmentation(paired_data):
     augmentation_pipeline = A.Compose(
@@ -218,9 +249,9 @@ def augmentation(paired_data):
 
     augmented_pairs = []
     for pair in paired_data:
-        sar_chip = pair['sar_data']
-        dem_chip = pair['dem_data']
-        avalanche_chip = pair['avalanche_data']
+        sar_chip = pair["sar_data"]
+        dem_chip = pair["dem_data"]
+        avalanche_chip = pair["avalanche_data"]
 
         # Apply augmentations
         augmented = augmentation_pipeline(
@@ -230,36 +261,23 @@ def augmentation(paired_data):
         )
 
         # Store augmented data
-        augmented_pairs.append({
-            'sar_data': augmented['image'],
-            'dem_data': augmented['dem_data'],
-            'avalanche_data': augmented['avalanche_data'],
-            'date': pair['date'],  # Keep metadata unchanged
-        })
+        augmented_pairs.append(
+            {
+                "sar_data": augmented["image"],
+                "dem_data": augmented["dem_data"],
+                "avalanche_data": augmented["avalanche_data"],
+                "date": pair["date"],  # Keep metadata unchanged
+            }
+        )
 
     return augmented_pairs
+
 
 # Usage Example
 augmented_chipped_pairs = augmentation(chipped_pairs)
 
 
-
-
-
-
-
-
-
-
 from SAR_augmentation import augmentation
-
-
-
-
-
-
-
-
 
 
 augmented_pairs = augmentation(paired_data)
@@ -287,7 +305,3 @@ for pair in paired_data:
             augmented_patches.append(
                 (sar_patches[i, j], avalanche_patches[i, j], dem_patches[i, j])
             )
-
-
-
-
