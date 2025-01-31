@@ -1,13 +1,14 @@
 import numpy as np
 import os
 import rasterio
+import re
 from datetime import datetime
 from sklearn.model_selection import train_test_split
 from skimage.util import view_as_windows
-from rasterio.merge import merge
+from skimage.transform import resize
 from collections import defaultdict
-import re
-import pickle
+from typing import List, Dict, Any
+
 
 
 def load_dem(dem_dir):
@@ -71,92 +72,6 @@ def group_avalanche_files_by_date(avalanche_dir):
 
 def combine_avalanche_data(avalanche_data_list):
     return np.maximum.reduce(avalanche_data_list)
-
-
-"""
-def pair_avalanche_with_sar_and_dem(avalanche_dir, sar_dir, dem_dir):
-    print("Starting pair_avalanche_with_sar_and_dem function")
-    paired_data = []
-    grouped_files = group_avalanche_files_by_date(avalanche_dir)
-    print(f"Grouped files: {grouped_files}")
-
-    # Load DEM once
-    dem_data = load_dem(dem_dir)
-    if dem_data is None:
-        print("Failed to load DEM data. Exiting function.")
-        return paired_data
-
-    for date, avalanche_files in grouped_files.items():
-        print(f"Processing date: {date}")
-        sar_file = f"SAR_{date}.tif"
-        sar_path = os.path.join(sar_dir, sar_file)
-        print(f"Looking for SAR file: {sar_path}")
-
-        if os.path.exists(sar_path):
-            print(f"SAR file found: {sar_path}")
-            try:
-                sar_data = load_sar_data(sar_path)
-                print(f"SAR data loaded, shape: {sar_data.shape}")
-                print("SAR data type:", sar_data.dtype)
-                print("SAR data contains NaN:", np.isnan(sar_data).any())
-                print("SAR data min:", np.nanmin(sar_data))
-                print("SAR data max:", np.nanmax(sar_data))
-            except Exception as e:
-                print(f"Error loading SAR data: {e}")
-                continue
-
-            avalanche_data_list = []
-            for avalanche_file in avalanche_files:
-                avalanche_path = os.path.join(avalanche_dir, avalanche_file)
-                print(f"Loading avalanche file: {avalanche_path}")
-                try:
-                    with rasterio.open(avalanche_path) as src:
-                        avalanche_data = src.read(1)
-                    print(f"Avalanche data loaded, shape: {avalanche_data.shape}")
-                    avalanche_data_list.append(avalanche_data)
-                except Exception as e:
-                    print(f"Error loading avalanche data: {e}")
-
-            if avalanche_data_list:
-                combined_avalanche_data = combine_avalanche_data(avalanche_data_list)
-                print(
-                    f"Combined avalanche data, shape: {combined_avalanche_data.shape}"
-                )
-
-                paired_data.append(
-                    {
-                        "date": datetime.strptime(date, "%Y%m%d").date(),
-                        "avalanche_data": combined_avalanche_data,
-                        "sar_data": sar_data,
-                        "dem_data": dem_data,
-                        "avalanche_files": avalanche_files,
-                        "sar_file": sar_file,
-                    }
-                )
-                print(f"Data paired for date: {date}")
-            else:
-                print(f"No valid avalanche data for date: {date}")
-        else:
-            print(f"SAR file not found: {sar_path}")
-
-    print(f"Total paired data: {len(paired_data)}")
-    return paired_data
-"""
-
-
-def save_paired_data(paired_data, output_file):
-    with open(output_file, "wb") as f:
-        pickle.dump(paired_data, f)
-    print(f"Paired data saved to {output_file}")
-
-
-def load_paired_data(input_file):
-    if os.path.exists(input_file):
-        with open(input_file, "rb") as f:
-            paired_data = pickle.load(f)
-        print(f"Paired data loaded from {input_file}")
-        return paired_data
-    return None
 
 
 def pair_avalanche_with_sar_and_dem(avalanche_dir, sar_dir, dem_dir, output_file=None):
@@ -233,15 +148,107 @@ def pair_avalanche_with_sar_and_dem(avalanche_dir, sar_dir, dem_dir, output_file
     return paired_data
 
 
-def normalize_sar(data):
-    log_data = np.log10(data.astype(np.float16) + 1)
-    return ((log_data - log_data.min()) / (log_data.max() - log_data.min())).astype(
-        np.float16
-    )
+def downsample_sar(paired_data):
+    for item in paired_data:
+        sar_data = item['sar_data']
+        dem_data = item['dem_data']
+        
+        dem_height, dem_width = dem_data.shape
+        
+        downsampled_sar = resize(sar_data, (dem_height, dem_width), preserve_range=True)
+        print(f"Original SAR Dimensions: {sar_data.shape}")
+        print(f"Downsampled SAR Dimensions: {downsampled_sar.shape}")
+        print(f"DEM Dimensions: {dem_data.shape}")
+        item['sar_data'] = downsampled_sar
+
+        return paired_data
 
 
-def normalize_dem(data):
-    return (data - data.min()) / (data.max() - data.min())
+def normalize_sar_in_chunks(data: np.ndarray, chunk_size: int = 1000) -> np.ndarray:
+    h, w = data.shape
+    normalized = np.zeros_like(data, dtype=np.float32)
+    epsilon = 1e-8  # Add this line at the beginning of the function
+    for i in range(0, h, chunk_size):
+        chunk = data[i : i + chunk_size, :]
+        print(f"Chunk min: {chunk.min()}, max: {chunk.max()}")
+
+        chunk = chunk.astype(np.float32)  # Ensure float32 type
+        chunk_shifted = chunk - chunk.min() + 1  # Shift to positive values
+        log_chunk = np.log10(chunk_shifted)
+        print(f"Log chunk min: {log_chunk.min()}, max: {log_chunk.max()}")
+        min_val, max_val = log_chunk.min(), log_chunk.max()
+        if min_val == max_val:
+            normalized[i : i + chunk_size, :] = 0
+        else:
+            # Replace this line
+            normalized[i : i + chunk_size, :] = (log_chunk - min_val) / (
+                max_val - min_val + epsilon
+            )
+        print(
+            f"Normalized chunk min: {normalized[i:i+chunk_size, :].min()}, max: {normalized[i:i+chunk_size, :].max()}"
+        )
+    return normalized
+
+
+def normalize_dem_in_chunks(data: np.ndarray, chunk_size: int = 1000) -> np.ndarray:
+    h, w = data.shape
+    normalized = np.zeros_like(data, dtype=np.float32)
+    for i in range(0, h, chunk_size):
+        chunk = data[i : i + chunk_size, :]
+        min_val, max_val = chunk.min(), chunk.max()
+        normalized[i : i + chunk_size, :] = (chunk - min_val) / (max_val - min_val)
+    return normalized
+
+
+def process_in_batches(
+    data: List[Dict[str, Any]], batch_size: int = 10
+) -> List[Dict[str, Any]]:
+    processed_data = []
+    for i in range(0, len(data), batch_size):
+        batch = data[i : i + batch_size]
+        for item in batch:
+            item["sar_data"] = normalize_sar_in_chunks(item["sar_data"])
+            item["dem_data"] = normalize_dem_in_chunks(item["dem_data"])
+        processed_data.extend(batch)
+    return processed_data
+
+
+def process_paired_data(paired_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return process_in_batches(paired_data, batch_size=10)
+
+
+def create_binary_mask(paired_data):
+    for pair in paired_data:
+        avalanche_data = pair["avalanche_data"]
+        binary_mask = avalanche_data > 0
+        pair["binary_avalanche_data"] = binary_mask.astype(int)
+
+    for pair in paired_data:
+        pair["avalanche_data"] = pair["binary_avalanche_data"]
+        del pair["binary_avalanche_data"]
+    
+    return paired_data
+
+
+# To do: Fix and test chippingg funtion with the downsampled sar data
+
+
+def create_chips(data, chip_size=128):
+    return view_as_windows(data, (chip_size, chip_size), step=chip_size)
+
+
+def create_chips_generator(data, chip_size=128):
+    h, w = data.shape
+    print(f"Input data shape: {data.shape}, dtype: {data.dtype}")
+    print(f"Input data range: {data.min()} to {data.max()}")
+    for i in range(0, h - chip_size + 1, chip_size):
+        for j in range(0, w - chip_size + 1, chip_size):
+            chip = np.array(data[i : i + chip_size, j : j + chip_size], copy=True)
+            print(
+                f"Chip at ({i},{j}): shape {chip.shape}, dtype {chip.dtype}, range {chip.min()} to {chip.max()}"
+            )
+            yield chip
+     
 
 
 # Split data into train, validation, and test sets

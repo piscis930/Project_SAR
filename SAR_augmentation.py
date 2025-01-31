@@ -16,6 +16,53 @@ from albumentations.augmentations.geometric.transforms import (
     VerticalFlip,
 )
 from albumentations.augmentations.geometric.rotate import Rotate
+ 
+
+# To do: Clean up / remove augmentation functions
+
+
+
+def augmentation(paired_data):
+    augmentation_pipeline = A.Compose(
+        [
+            A.HorizontalFlip(p=0.5),  # Random horizontal flip
+            A.VerticalFlip(p=0.5),  # Random vertical flip
+            A.Rotate(limit=30, p=0.5),  # Random rotation within ±30 degrees
+            A.ShiftScaleRotate(
+                shift_limit=0.1, scale_limit=0.1, rotate_limit=10, p=0.5
+            ),
+            A.RandomBrightnessContrast(
+                p=0.2
+            ),  # Adjust brightness/contrast for SAR/DEM only
+        ],
+        additional_targets={"dem_data": "image", "avalanche_data": "mask"},
+    )
+
+    augmented_pairs = []
+    for pair in paired_data:
+        sar_chip = pair["sar_data"]
+        dem_chip = pair["dem_data"]
+        avalanche_chip = pair["avalanche_data"]
+
+        # Apply augmentations
+        augmented = augmentation_pipeline(
+            image=sar_chip,
+            dem_data=dem_chip,
+            avalanche_data=avalanche_chip,
+        )
+
+        # Store augmented data
+        augmented_pairs.append(
+            {
+                "sar_data": augmented["image"],
+                "dem_data": augmented["dem_data"],
+                "avalanche_data": augmented["avalanche_data"],
+                "date": pair["date"],  # Keep metadata unchanged
+            }
+        )
+
+    return augmented_pairs
+
 
 
 # Define a pipeline for augmenting both images and masks
