@@ -2,13 +2,13 @@ import numpy as np
 import os
 import rasterio
 import re
+import copy
 from datetime import datetime
 from sklearn.model_selection import train_test_split
 from skimage.util import view_as_windows
 from skimage.transform import resize
 from collections import defaultdict
 from typing import List, Dict, Any
-
 
 
 def load_dem(dem_dir):
@@ -74,10 +74,7 @@ def combine_avalanche_data(avalanche_data_list):
     return np.maximum.reduce(avalanche_data_list)
 
 
-def pair_avalanche_with_sar_and_dem(avalanche_dir, sar_dir, dem_dir, output_file=None):
-    if output_file and os.path.exists(output_file):
-        return load_paired_data(output_file)
-
+def pair_avalanche_with_sar_and_dem(avalanche_dir, sar_dir, dem_dir):
     print("Starting pair_avalanche_with_sar_and_dem function")
     paired_data = []
     grouped_files = group_avalanche_files_by_date(avalanche_dir)
@@ -143,44 +140,57 @@ def pair_avalanche_with_sar_and_dem(avalanche_dir, sar_dir, dem_dir, output_file
             print(f"SAR file not found: {sar_path}")
 
     print(f"Total paired data: {len(paired_data)}")
-    if output_file:
-        save_paired_data(paired_data, output_file)
+
     return paired_data
 
 
-def downsample_sar(paired_data):
+def crop_sar(paired_data):
+    cropped_paired_data = []
     for item in paired_data:
-        sar_data = item['sar_data']
-        dem_data = item['dem_data']
-        
-        dem_height, dem_width = dem_data.shape
-        
-        downsampled_sar = resize(sar_data, (dem_height, dem_width), preserve_range=True)
+        new_item = item.copy()
+        sar_data = item["sar_data"]
+        dem_data = item["dem_data"]
+
+        # Find the non-zero region in the SAR data
+        non_zero = np.nonzero(sar_data)
+        min_row, max_row = np.min(non_zero[0]), np.max(non_zero[0])
+        min_col, max_col = np.min(non_zero[1]), np.max(non_zero[1])
+
+        # Crop the SAR data to the non-zero region
+        cropped_sar = sar_data[min_row : max_row + 1, min_col : max_col + 1]
+
         print(f"Original SAR Dimensions: {sar_data.shape}")
-        print(f"Downsampled SAR Dimensions: {downsampled_sar.shape}")
+        print(f"Cropped SAR Dimensions: {cropped_sar.shape}")
         print(f"DEM Dimensions: {dem_data.shape}")
-        item['sar_data'] = downsampled_sar
 
-        return paired_data
+        # Verify that the cropped SAR dimensions match the DEM dimensions
+        if cropped_sar.shape != dem_data.shape:
+            raise ValueError(
+                f"Cropped SAR dimensions {cropped_sar.shape} do not match DEM dimensions {dem_data.shape}"
+            )
+
+        new_item["sar_data"] = cropped_sar
+        cropped_paired_data.append(new_item)
+    return cropped_paired_data
 
 
+"""
 def normalize_sar_in_chunks(data: np.ndarray, chunk_size: int = 1000) -> np.ndarray:
     h, w = data.shape
     normalized = np.zeros_like(data, dtype=np.float32)
-    epsilon = 1e-8  # Add this line at the beginning of the function
+    epsilon = 1e-8
     for i in range(0, h, chunk_size):
         chunk = data[i : i + chunk_size, :]
         print(f"Chunk min: {chunk.min()}, max: {chunk.max()}")
 
-        chunk = chunk.astype(np.float32)  # Ensure float32 type
-        chunk_shifted = chunk - chunk.min() + 1  # Shift to positive values
+        chunk = chunk.astype(np.float32)
+        chunk_shifted = chunk - chunk.min() + 1
         log_chunk = np.log10(chunk_shifted)
         print(f"Log chunk min: {log_chunk.min()}, max: {log_chunk.max()}")
         min_val, max_val = log_chunk.min(), log_chunk.max()
         if min_val == max_val:
             normalized[i : i + chunk_size, :] = 0
         else:
-            # Replace this line
             normalized[i : i + chunk_size, :] = (log_chunk - min_val) / (
                 max_val - min_val + epsilon
             )
@@ -215,6 +225,7 @@ def process_in_batches(
 
 def process_paired_data(paired_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return process_in_batches(paired_data, batch_size=10)
+"""
 
 
 def create_binary_mask(paired_data):
@@ -226,7 +237,7 @@ def create_binary_mask(paired_data):
     for pair in paired_data:
         pair["avalanche_data"] = pair["binary_avalanche_data"]
         del pair["binary_avalanche_data"]
-    
+
     return paired_data
 
 
@@ -248,7 +259,6 @@ def create_chips_generator(data, chip_size=128):
                 f"Chip at ({i},{j}): shape {chip.shape}, dtype {chip.dtype}, range {chip.min()} to {chip.max()}"
             )
             yield chip
-     
 
 
 # Split data into train, validation, and test sets
