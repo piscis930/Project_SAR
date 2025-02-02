@@ -2,182 +2,73 @@ import sys
 
 sys.path.append("/Users/egil/Documents/avancerad_fjarranalys/SAR_Avalanche_project")
 
-import os
-from SAR_augmentation import augment_sar_avalanche_and_dem
+import gc
+
+# from SAR_augmentation import augment_sar_avalanche_and_dem
 from CNN_Preprocessing import (
+    align_and_crop_rasters,
+    align_and_expand_avalanche_rasters,
     pair_avalanche_with_sar_and_dem,
-    crop_sar,
+    process_paired_data,
     create_binary_mask,
-)  # process_paired_data
+    create_chips,
+)
 
 
 sar_dir = "Data/SAR_correct"
 avalanche_dir = "Data/Avalanches_corrected"
-dem_dir = "Data/DEM"
+dem_file_path = "Data/DEM/Comb_10m_DTM.tif"
+aligned_and_cropped_dir_SAR = "Data/Cropped_SAR"
+aligned_and_filled_directory_avalanche = "Data/Aligned_and_filled_avalanche_data"
+
+align_and_expand_avalanche_rasters(
+    avalanche_dir, dem_file_path, aligned_and_filled_directory_avalanche
+)
+
+
+align_and_crop_rasters(sar_dir, dem_file_path, aligned_and_cropped_dir_SAR)
 
 # Pair SAR, Avalanche and DEM data
-paired_data = pair_avalanche_with_sar_and_dem(avalanche_dir, sar_dir, dem_dir)
+aligned_paired_data = pair_avalanche_with_sar_and_dem(
+    aligned_and_filled_directory_avalanche, aligned_and_cropped_dir_SAR, dem_file_path
+)
 
-cropped_paired_data = crop_sar(paired_data)
+# Normalize SAR and DEM data
+normalized_data = process_paired_data(aligned_paired_data)
+# Discard old dataset to free up memory
+del aligned_paired_data
+gc.collect()
 
-# Normalize sar- and dem-data
-# normalized_data = process_paired_data(cropped_paired_data)
-
-
-def normalize_sar_global(data: np.ndarray) -> np.ndarray:
-    data_float = data.astype(np.float32)
-    data_shifted = data_float - np.min(data_float) + 1
-    log_data = np.log10(data_shifted)
-
-    p_low, p_high = np.percentile(log_data, [2, 98])
-    epsilon = 1e-8
-    normalized = np.clip((log_data - p_low) / (p_high - p_low + epsilon), 0, 1)
-
-    return normalized
+# Create a binary mask (1=avalanche, 0=not avalanche) of avalanche data
+processed_data = create_binary_mask(normalized_data)
+del normalized_data
+gc.collect()
 
 
-def normalize_dem_global(data: np.ndarray) -> np.ndarray:
-    data_float = data.astype(np.float32)
-    min_val, max_val = np.min(data_float), np.max(data_float)
-    epsilon = 1e-8
-    normalized = (data_float - min_val) / (max_val - min_val + epsilon)
-    return normalized
-
-
-def process_in_batches(
-    data: List[Dict[str, Any]], batch_size: int = 10
-) -> List[Dict[str, Any]]:
-    processed_data = []
-    for i in range(0, len(data), batch_size):
-        batch = data[i : i + batch_size]
-        for item in batch:
-            item["sar_data"] = normalize_sar_global(item["sar_data"])
-            item["dem_data"] = normalize_dem_global(item["dem_data"])
-        processed_data.extend(batch)
+def crop_sar_data(processed_data):
+    for data in processed_data:
+        if data["sar_data"].shape != data["dem_data"].shape:
+            data["sar_data"] = data["sar_data"][:-1, :-1]
     return processed_data
 
 
-def process_paired_data(paired_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    return process_in_batches(paired_data, batch_size=10)
-
-
-normalized_data = process_paired_data(cropped_paired_data)
-
-import matplotlib.pyplot as plt
-import numpy as np
-
-
-def plot_sar_data(data, title):
-    plt.figure(figsize=(10, 8))
-    plt.imshow(data, cmap="gray")
-    plt.title(title)
-    plt.colorbar()
-    plt.show()
-
-    print(f"Min: {np.min(data)}, Max: {np.max(data)}")
-    print(f"Mean: {np.mean(data)}, Std: {np.std(data)}")
-
-
-# Plot original SAR data
-plot_sar_data(cropped_paired_data[5]["sar_data"], "Original SAR Data")
-
-
-def check_normalized_sar(original, normalized):
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
-
-    ax1.imshow(normalized, cmap="gray")
-    ax1.set_title("Normalized SAR Image")
-
-    ax2.hist(normalized.flatten(), bins=50, range=(0, 1))
-    ax2.set_title("Histogram of Normalized Values")
-
-    plt.show()
-
-    print(f"Normalized data - Min: {normalized.min():.4f}, Max: {normalized.max():.4f}")
-    print(
-        f"Normalized data - Mean: {np.mean(normalized):.4f}, Std: {np.std(normalized):.4f}"
-    )
-
-    # Check correlation with original data
-    correlation = np.corrcoef(original.flatten(), normalized.flatten())[0, 1]
-    print(f"Correlation with original data: {correlation:.4f}")
-
-
-# Use this function on your normalized SAR data
-check_normalized_sar(cropped_paired_data[5]["sar_data"], normalized_data[5]["sar_data"])
-
-
-import matplotlib.pyplot as plt
-
-
-def plot_hist(data, title):
-    plt.hist(data.flatten(), bins=50, alpha=0.7)
-    plt.title(title)
-    plt.xlabel("Value")
-    plt.ylabel("Frequency")
-
-
-for idx in range(3):  # First 3 items
-    plt.figure(figsize=(12, 4))
-
-    plt.subplot(1, 2, 1)
-    plot_hist(cropped_paired_data[idx]["sar_data"], f"SAR Distribution (Item {idx})")
-
-    plt.subplot(1, 2, 2)
-    plot_hist(cropped_paired_data[idx]["dem_data"], f"DEM Distribution (Item {idx})")
-
-    plt.tight_layout()
-    plt.show()
-
-
-test_idx = 6  # First item
-print("Original SAR sample values:")
-print(
-    cropped_paired_data[test_idx]["sar_data"][100:103, 100:103]
-)  # Keep original data for comparison
-print("\nNormalized SAR sample values:")
-print(cropped_paired_data[test_idx]["sar_data"][100:103, 100:103])
-
-
-import tifffile
-import numpy as np
-
-# Assuming your data is in a numpy array called 'data'
-tifffile.imwrite("output.tif", cropped_paired_data[5]["sar_data"], compression="zlib")
-
-# Create a binary mask (1=avalanch, 0=not avalanch) of avalanch data
-processed_data = create_binary_mask(paired_data)
-
-# Some testing
-for i, pair in enumerate(paired_data):
-    print(f"Paired Data {i + 1}:")
-    date = pair["date"]
-    print(f"Date: {date}")
-    avalanche_data = pair["avalanche_data"]
-    SAR_data = pair["sar_data"]
-    print(f"Avalanche Data Shape: {avalanche_data.shape}")
-    print(f"Min Value: {avalanche_data.min()}, Max Value: {avalanche_data.max()}")
-    print(f"Mean Value: {avalanche_data.mean()}")
-    print(f"SAR Data Shape: {SAR_data.shape}")
-    print(f"Min Value: {SAR_data.min()}, Max Value: {SAR_data.max()}")
-    print(f"Mean Value: {SAR_data.mean()}")
-    print("-" * 30)
+processed_data = crop_sar_data(processed_data)
 
 
 chipped_pairs = []
 
-for pair in paired_data:
+for pair in processed_data:
     sar_data = pair["sar_data"]
     dem_data = pair["dem_data"]
     avalanche_data = pair["avalanche_data"]
     date = pair["date"]
 
-    # Create chips for each data type
-    sar_chips = create_chips_new(sar_data)
-    dem_chips = create_chips_new(dem_data)
-    avalanche_chips = create_chips_new(avalanche_data)
+    # Create generators for each data type
+    sar_chips = create_chips(sar_data)
+    dem_chips = create_chips(dem_data)
+    avalanche_chips = create_chips(avalanche_data)
 
-    # Create new pairs for each set of chips
+    # Iterate through the generators simultaneously
     for sar_chip, dem_chip, avalanche_chip in zip(
         sar_chips, dem_chips, avalanche_chips
     ):
@@ -190,34 +81,275 @@ for pair in paired_data:
             }
         )
 
-    # Clear memory after processing each pair
-    del sar_chips, dem_chips, avalanche_chips
+del processed_data
+gc.collect()
 
 print(f"Total number of chipped pairs: {len(chipped_pairs)}")
+print(processed_data[8]["avalanche_data"].shape)
 
-# Some print testing
-sar_chips = create_chips_new(paired_data[0]["sar_data"])
-print(f"SAR chips shape: {sar_chips.shape}")
-print(f"SAR chips min: {sar_chips.min()}, max: {sar_chips.max()}")
-print(f"First chip sample (5x5):\n{sar_chips[0, :5, :5]}")
-
-
-sar_chips = create_chips_new(paired_data[0]["sar_data"])
-print(f"SAR chips shape: {sar_chips.shape}")
-print(f"SAR chips min: {sar_chips.min()}, max: {sar_chips.max()}")
-print(f"First chip sample (5x5):\n{sar_chips[0, :5, :5]}")
+import numpy as np
+import matplotlib.pyplot as plt
+import random
 
 
-first_128x128_before = paired_data[0]["sar_data"][:128, :128]
-print(first_128x128_before)
-sar_chips = create_chips_generator(first_128x128_before, chip_size=128)
-first_chip_after = next(sar_chips)
-print(f"Shape before chipping: {first_128x128_before.shape}")
-print(f"Shape after chipping: {first_chip_after.shape}")
-print(
-    f"Range before chipping: {first_128x128_before.min()} to {first_128x128_before.max()}"
+def test_chipped_pairs(chipped_pairs, original_data_length, chip_size=128):
+    print(f"Original data length: {original_data_length}")
+
+    # 1. Verify chip count
+    print(f"Total number of chips: {len(chipped_pairs)}")
+
+    # 2. Check chip content and dimensions
+    for i, chip_data in enumerate(
+        random.sample(chipped_pairs, min(5, len(chipped_pairs)))
+    ):
+        sar_chip = chip_data["sar_data"]
+        print(f"Sample SAR chip {i+1} shape: {sar_chip.shape}")
+        plt.figure(figsize=(5, 5))
+        plt.imshow(sar_chip, cmap="gray")
+        plt.title(f"Sample SAR Chip {i+1}")
+        plt.colorbar()
+        plt.show()
+
+    # 3. Data integrity
+    chip_means = [np.mean(chip["sar_data"]) for chip in chipped_pairs]
+    chip_stds = [np.std(chip["sar_data"]) for chip in chipped_pairs]
+    print(
+        f"Chips statistics - Mean: {np.mean(chip_means):.4f}, Std: {np.mean(chip_stds):.4f}"
+    )
+
+
+# Usage
+original_data_length = len(
+    processed_data
+)  # Assuming original_sar_data is your list of dictionaries
+test_chipped_pairs(chipped_pairs, original_data_length)
+
+
+X_sar = np.memmap("X_SARs.dat", dtype="float32", mode="w+", shape=(73008, 128, 128))
+X_dem = np.memmap("X_DEMs.dat", dtype="float32", mode="w+", shape=(73008, 128, 128))
+y = np.memmap("ys.dat", dtype="float32", mode="w+", shape=(73008, 128, 128))
+
+for i, pair in enumerate(chipped_pairs):
+    X_sar[i] = pair["sar_data"]
+    X_dem[i] = pair["dem_data"]
+    y[i] = pair["avalanche_data"]
+
+X_sar = X_sar.reshape(-1, 128, 128, 1)
+X_dem = X_dem.reshape(-1, 128, 128, 1)
+y = y.reshape(-1, 128, 128, 1)
+
+print("X_sar shape:", X_sar.shape)
+print("X_dem shape:", X_dem.shape)
+print("y shape:", y.shape)
+
+
+print("X_sar range:", X_sar.min(), "to", X_sar.max())
+print("X_dem range:", X_dem.min(), "to", X_dem.max())
+print("y range:", y.min(), "to", y.max())
+
+print("X_sar dtype:", X_sar.dtype)
+print("X_dem dtype:", X_dem.dtype)
+print("y dtype:", y.dtype)
+
+
+from sklearn.model_selection import train_test_split
+
+import numpy as np
+from sklearn.utils import shuffle
+import os
+import tempfile
+
+
+def custom_train_test_split(
+    X_sar, X_dem, y, test_size=0.2, random_state=None, batch_size=1000
+):
+    n_samples = X_sar.shape[0]
+    indices = np.arange(n_samples)
+    indices = np.random.RandomState(random_state).permutation(indices)
+    test_size = int(test_size * n_samples)
+    test_indices = indices[:test_size]
+    train_indices = indices[test_size:]
+
+    # Create a temporary directory to store the memory-mapped files
+    temp_dir = tempfile.mkdtemp()
+
+    X_sar_train = np.memmap(
+        os.path.join(temp_dir, "X_sar_train.dat"),
+        dtype="float32",
+        mode="w+",
+        shape=(len(train_indices), *X_sar.shape[1:]),
+    )
+    X_sar_test = np.memmap(
+        os.path.join(temp_dir, "X_sar_test.dat"),
+        dtype="float32",
+        mode="w+",
+        shape=(len(test_indices), *X_sar.shape[1:]),
+    )
+    X_dem_train = np.memmap(
+        os.path.join(temp_dir, "X_dem_train.dat"),
+        dtype="float32",
+        mode="w+",
+        shape=(len(train_indices), *X_dem.shape[1:]),
+    )
+    X_dem_test = np.memmap(
+        os.path.join(temp_dir, "X_dem_test.dat"),
+        dtype="float32",
+        mode="w+",
+        shape=(len(test_indices), *X_dem.shape[1:]),
+    )
+    y_train = np.memmap(
+        os.path.join(temp_dir, "y_train.dat"),
+        dtype="float32",
+        mode="w+",
+        shape=(len(train_indices), *y.shape[1:]),
+    )
+    y_test = np.memmap(
+        os.path.join(temp_dir, "y_test.dat"),
+        dtype="float32",
+        mode="w+",
+        shape=(len(test_indices), *y.shape[1:]),
+    )
+
+    for i in range(0, len(train_indices), batch_size):
+        batch = train_indices[i : i + batch_size]
+        X_sar_train[i : i + len(batch)] = X_sar[batch]
+        X_dem_train[i : i + len(batch)] = X_dem[batch]
+        y_train[i : i + len(batch)] = y[batch]
+
+    for i in range(0, len(test_indices), batch_size):
+        batch = test_indices[i : i + batch_size]
+        X_sar_test[i : i + len(batch)] = X_sar[batch]
+        X_dem_test[i : i + len(batch)] = X_dem[batch]
+        y_test[i : i + len(batch)] = y[batch]
+
+    return X_sar_train, X_sar_test, X_dem_train, X_dem_test, y_train, y_test
+
+
+# Use the custom function
+X_sar_train, X_sar_test, X_dem_train, X_dem_test, y_train, y_test = (
+    custom_train_test_split(
+        X_sar, X_dem, y, test_size=0.2, random_state=42, batch_size=1000
+    )
 )
-print(f"Range after chipping: {first_chip_after.min()} to {first_chip_after.max()}")
+
+
+X_sar_train, X_sar_val, X_dem_train, X_dem_val, y_train, y_val = (
+    custom_train_test_split(
+        X_sar_train,
+        X_dem_train,
+        y_train,
+        test_size=0.25,
+        random_state=42,
+        batch_size=1000,
+    )
+)
+
+# To do create dataset, create model, compile and train model, evaluate
+"""
+
+import tensorflow as tf
+
+print(tf.__version__)
+
+
+def create_dataset(X_sar, X_dem, y, batch_size=32, shuffle=True):
+    dataset = tf.data.Dataset.from_tensor_slices(((X_sar, X_dem), y))
+    if shuffle:
+        dataset = dataset.shuffle(buffer_size=len(y))
+    return dataset.batch(batch_size).prefetch(tf.data.AUTOTUNE)
+
+
+train_dataset = create_dataset(X_sar_train, X_dem_train, y_train)
+val_dataset = create_dataset(X_sar_val, X_dem_val, y_val, shuffle=False)
+test_dataset = create_dataset(X_sar_test, X_dem_test, y_test, shuffle=False)
+
+
+def create_model(input_shape):
+    sar_input = tf.keras.layers.Input(shape=input_shape)
+    dem_input = tf.keras.layers.Input(shape=input_shape)
+
+    # SAR branch
+    x1 = tf.keras.layers.Conv2D(32, 3, activation="relu", padding="same")(sar_input)
+    x1 = tf.keras.layers.BatchNormalization()(x1)
+    x1 = tf.keras.layers.MaxPooling2D()(x1)
+
+    x1 = tf.keras.layers.Conv2D(64, 3, activation="relu", padding="same")(x1)
+    x1 = tf.keras.layers.BatchNormalization()(x1)
+    x1 = tf.keras.layers.MaxPooling2D()(x1)
+
+    x1 = tf.keras.layers.Flatten()(x1)
+
+    # DEM branch
+    x2 = tf.keras.layers.Conv2D(32, 3, activation="relu", padding="same")(dem_input)
+    x2 = tf.keras.layers.BatchNormalization()(x2)
+    x2 = tf.keras.layers.MaxPooling2D()(x2)
+
+    x2 = tf.keras.layers.Conv2D(64, 3, activation="relu", padding="same")(x2)
+    x2 = tf.keras.layers.BatchNormalization()(x2)
+    x2 = tf.keras.layers.MaxPooling2D()(x2)
+
+    x2 = tf.keras.layers.Flatten()(x2)
+
+    # Combine branches
+    combined = tf.keras.layers.concatenate([x1, x2])
+    x = tf.keras.layers.Dense(128, activation="relu")(combined)
+    x = tf.keras.layers.Dropout(0.5)(x)
+    output = tf.keras.layers.Dense(1, activation="sigmoid")(x)
+
+    model = tf.keras.Model(inputs=[sar_input, dem_input], outputs=output)
+    return model
+
+
+model = create_model((128, 128, 1))
+
+model.compile(
+    optimizer=tf.keras.optimizers.Adam(learning_rate=1e-4),
+    loss="binary_crossentropy",
+    metrics=["accuracy", tf.keras.metrics.Precision(), tf.keras.metrics.Recall()],
+)
+
+callbacks = [
+    tf.keras.callbacks.EarlyStopping(
+        monitor="val_loss", patience=5, restore_best_weights=True
+    ),
+    tf.keras.callbacks.ReduceLROnPlateau(
+        monitor="val_loss", factor=0.2, patience=3, min_lr=1e-6
+    ),
+]
+
+
+history = model.fit(
+    train_dataset, validation_data=val_dataset, epochs=50, callbacks=callbacks
+)
+
+test_results = model.evaluate(test_dataset)
+print("Test Loss, Test Accuracy:", test_results)
+
+import matplotlib.pyplot as plt
+
+plt.figure(figsize=(12, 4))
+plt.subplot(131)
+plt.plot(history.history["accuracy"], label="Train Accuracy")
+plt.plot(history.history["val_accuracy"], label="Val Accuracy")
+plt.title("Accuracy")
+plt.legend()
+
+plt.subplot(132)
+plt.plot(history.history["loss"], label="Train Loss")
+plt.plot(history.history["val_loss"], label="Val Loss")
+plt.title("Loss")
+plt.legend()
+
+plt.subplot(133)
+plt.plot(history.history["lr"], label="Learning Rate")
+plt.title("Learning Rate")
+plt.legend()
+
+plt.tight_layout()
+plt.show()
+
+
+predictions = model.predict(test_dataset)
 
 
 # To do: augment chips
@@ -250,3 +382,11 @@ for pair in paired_data:
 
 
 # To do: Reshape and split data into Xy, train, val, test
+
+
+
+
+
+
+
+"""
