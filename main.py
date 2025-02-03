@@ -1,8 +1,9 @@
-import sys
+#import sys
 
-sys.path.append("/Users/egil/Documents/avancerad_fjarranalys/SAR_Avalanche_project")
+#sys.path.append("/Users/egil/Documents/avancerad_fjarranalys/SAR_Avalanche_project")
 
 import gc
+import numpy as np
 
 # from SAR_augmentation import augment_sar_avalanche_and_dem
 from CNN_Preprocessing import (
@@ -12,6 +13,7 @@ from CNN_Preprocessing import (
     process_paired_data,
     create_binary_mask,
     create_chips,
+    custom_train_test_split
 )
 
 
@@ -84,46 +86,6 @@ for pair in processed_data:
 del processed_data
 gc.collect()
 
-print(f"Total number of chipped pairs: {len(chipped_pairs)}")
-print(processed_data[8]["avalanche_data"].shape)
-
-import numpy as np
-import matplotlib.pyplot as plt
-import random
-
-
-def test_chipped_pairs(chipped_pairs, original_data_length, chip_size=128):
-    print(f"Original data length: {original_data_length}")
-
-    # 1. Verify chip count
-    print(f"Total number of chips: {len(chipped_pairs)}")
-
-    # 2. Check chip content and dimensions
-    for i, chip_data in enumerate(
-        random.sample(chipped_pairs, min(5, len(chipped_pairs)))
-    ):
-        sar_chip = chip_data["sar_data"]
-        print(f"Sample SAR chip {i+1} shape: {sar_chip.shape}")
-        plt.figure(figsize=(5, 5))
-        plt.imshow(sar_chip, cmap="gray")
-        plt.title(f"Sample SAR Chip {i+1}")
-        plt.colorbar()
-        plt.show()
-
-    # 3. Data integrity
-    chip_means = [np.mean(chip["sar_data"]) for chip in chipped_pairs]
-    chip_stds = [np.std(chip["sar_data"]) for chip in chipped_pairs]
-    print(
-        f"Chips statistics - Mean: {np.mean(chip_means):.4f}, Std: {np.mean(chip_stds):.4f}"
-    )
-
-
-# Usage
-original_data_length = len(
-    processed_data
-)  # Assuming original_sar_data is your list of dictionaries
-test_chipped_pairs(chipped_pairs, original_data_length)
-
 
 X_sar = np.memmap("X_SARs.dat", dtype="float32", mode="w+", shape=(73008, 128, 128))
 X_dem = np.memmap("X_DEMs.dat", dtype="float32", mode="w+", shape=(73008, 128, 128))
@@ -138,100 +100,13 @@ X_sar = X_sar.reshape(-1, 128, 128, 1)
 X_dem = X_dem.reshape(-1, 128, 128, 1)
 y = y.reshape(-1, 128, 128, 1)
 
-print("X_sar shape:", X_sar.shape)
-print("X_dem shape:", X_dem.shape)
-print("y shape:", y.shape)
 
 
-print("X_sar range:", X_sar.min(), "to", X_sar.max())
-print("X_dem range:", X_dem.min(), "to", X_dem.max())
-print("y range:", y.min(), "to", y.max())
-
-print("X_sar dtype:", X_sar.dtype)
-print("X_dem dtype:", X_dem.dtype)
-print("y dtype:", y.dtype)
-
-
-from sklearn.model_selection import train_test_split
-
-import numpy as np
-from sklearn.utils import shuffle
-import os
-import tempfile
-
-
-def custom_train_test_split(
-    X_sar, X_dem, y, test_size=0.2, random_state=None, batch_size=1000
-):
-    n_samples = X_sar.shape[0]
-    indices = np.arange(n_samples)
-    indices = np.random.RandomState(random_state).permutation(indices)
-    test_size = int(test_size * n_samples)
-    test_indices = indices[:test_size]
-    train_indices = indices[test_size:]
-
-    # Create a temporary directory to store the memory-mapped files
-    temp_dir = tempfile.mkdtemp()
-
-    X_sar_train = np.memmap(
-        os.path.join(temp_dir, "X_sar_train.dat"),
-        dtype="float32",
-        mode="w+",
-        shape=(len(train_indices), *X_sar.shape[1:]),
-    )
-    X_sar_test = np.memmap(
-        os.path.join(temp_dir, "X_sar_test.dat"),
-        dtype="float32",
-        mode="w+",
-        shape=(len(test_indices), *X_sar.shape[1:]),
-    )
-    X_dem_train = np.memmap(
-        os.path.join(temp_dir, "X_dem_train.dat"),
-        dtype="float32",
-        mode="w+",
-        shape=(len(train_indices), *X_dem.shape[1:]),
-    )
-    X_dem_test = np.memmap(
-        os.path.join(temp_dir, "X_dem_test.dat"),
-        dtype="float32",
-        mode="w+",
-        shape=(len(test_indices), *X_dem.shape[1:]),
-    )
-    y_train = np.memmap(
-        os.path.join(temp_dir, "y_train.dat"),
-        dtype="float32",
-        mode="w+",
-        shape=(len(train_indices), *y.shape[1:]),
-    )
-    y_test = np.memmap(
-        os.path.join(temp_dir, "y_test.dat"),
-        dtype="float32",
-        mode="w+",
-        shape=(len(test_indices), *y.shape[1:]),
-    )
-
-    for i in range(0, len(train_indices), batch_size):
-        batch = train_indices[i : i + batch_size]
-        X_sar_train[i : i + len(batch)] = X_sar[batch]
-        X_dem_train[i : i + len(batch)] = X_dem[batch]
-        y_train[i : i + len(batch)] = y[batch]
-
-    for i in range(0, len(test_indices), batch_size):
-        batch = test_indices[i : i + batch_size]
-        X_sar_test[i : i + len(batch)] = X_sar[batch]
-        X_dem_test[i : i + len(batch)] = X_dem[batch]
-        y_test[i : i + len(batch)] = y[batch]
-
-    return X_sar_train, X_sar_test, X_dem_train, X_dem_test, y_train, y_test
-
-
-# Use the custom function
 X_sar_train, X_sar_test, X_dem_train, X_dem_test, y_train, y_test = (
     custom_train_test_split(
         X_sar, X_dem, y, test_size=0.2, random_state=42, batch_size=1000
     )
 )
-
 
 X_sar_train, X_sar_val, X_dem_train, X_dem_val, y_train, y_val = (
     custom_train_test_split(
@@ -245,7 +120,7 @@ X_sar_train, X_sar_val, X_dem_train, X_dem_val, y_train, y_val = (
 )
 
 # To do create dataset, create model, compile and train model, evaluate
-"""
+
 
 import tensorflow as tf
 
