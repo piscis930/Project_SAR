@@ -2,6 +2,8 @@ import numpy as np
 import os
 import rasterio
 import re
+import tempfile
+
 from datetime import datetime
 from sklearn.model_selection import train_test_split
 from skimage.util import view_as_windows
@@ -12,6 +14,8 @@ from rasterio.transform import from_origin
 from rasterio.warp import calculate_default_transform, reproject, Resampling
 from rasterio.mask import mask
 from shapely.geometry import box
+from sklearn.utils import shuffle
+
 
 
 def align_and_crop_rasters(sar_dir, dem_path, output_dir):
@@ -344,9 +348,6 @@ def create_binary_mask(paired_data):
     return paired_data
 
 
-# To do: Fix and test chippingg funtion with the downsampled sar data
-
-
 def create_chips(data, chip_size=128):
     h, w = data.shape
     print(f"Input data shape: {data.shape}, dtype: {data.dtype}")
@@ -358,6 +359,67 @@ def create_chips(data, chip_size=128):
                 f"Chip at ({i},{j}): shape {chip.shape}, dtype {chip.dtype}, range {chip.min()} to {chip.max()}"
             )
             yield chip
+
+
+def custom_train_test_split(
+    X_sar, X_dem, y, test_size=0.2, random_state=None, batch_size=1000
+):
+    n_samples = X_sar.shape[0]
+    indices = np.arange(n_samples)
+    indices = np.random.RandomState(random_state).permutation(indices)
+    test_size = int(test_size * n_samples)
+    test_indices = indices[:test_size]
+    train_indices = indices[test_size:]
+    # Create a temporary directory to store the memory-mapped files
+    temp_dir = tempfile.mkdtemp()
+    X_sar_train = np.memmap(
+        os.path.join(temp_dir, "X_sar_train.dat"),
+        dtype="float32",
+        mode="w+",
+        shape=(len(train_indices), *X_sar.shape[1:]),
+    )
+    X_sar_test = np.memmap(
+        os.path.join(temp_dir, "X_sar_test.dat"),
+        dtype="float32",
+        mode="w+",
+        shape=(len(test_indices), *X_sar.shape[1:]),
+    )
+    X_dem_train = np.memmap(
+        os.path.join(temp_dir, "X_dem_train.dat"),
+        dtype="float32",
+        mode="w+",
+        shape=(len(train_indices), *X_dem.shape[1:]),
+    )
+    X_dem_test = np.memmap(
+        os.path.join(temp_dir, "X_dem_test.dat"),
+        dtype="float32",
+        mode="w+",
+        shape=(len(test_indices), *X_dem.shape[1:]),
+    )
+    y_train = np.memmap(
+        os.path.join(temp_dir, "y_train.dat"),
+        dtype="float32",
+        mode="w+",
+        shape=(len(train_indices), *y.shape[1:]),
+    )
+    y_test = np.memmap(
+        os.path.join(temp_dir, "y_test.dat"),
+        dtype="float32",
+        mode="w+",
+        shape=(len(test_indices), *y.shape[1:]),
+    )
+    for i in range(0, len(train_indices), batch_size):
+        batch = train_indices[i : i + batch_size]
+        X_sar_train[i : i + len(batch)] = X_sar[batch]
+        X_dem_train[i : i + len(batch)] = X_dem[batch]
+        y_train[i : i + len(batch)] = y[batch]
+    for i in range(0, len(test_indices), batch_size):
+        batch = test_indices[i : i + batch_size]
+        X_sar_test[i : i + len(batch)] = X_sar[batch]
+        X_dem_test[i : i + len(batch)] = X_dem[batch]
+        y_test[i : i + len(batch)] = y[batch]
+    return X_sar_train, X_sar_test, X_dem_train, X_dem_test, y_train, y_test
+
 
 
 # Split data into train, validation, and test sets

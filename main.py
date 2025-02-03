@@ -1,6 +1,6 @@
-#import sys
+import sys
 
-#sys.path.append("/Users/egil/Documents/avancerad_fjarranalys/SAR_Avalanche_project")
+sys.path.append("/Users/egil/Documents/avancerad_fjarranalys/SAR_Avalanche_project")
 
 import gc
 import numpy as np
@@ -21,7 +21,7 @@ sar_dir = "Data/SAR_correct"
 avalanche_dir = "Data/Avalanches_corrected"
 dem_file_path = "Data/DEM/Comb_10m_DTM.tif"
 aligned_and_cropped_dir_SAR = "Data/Cropped_SAR"
-aligned_and_filled_directory_avalanche = "Data/Aligned_and_filled_avalanche_data"
+aligned_and_filled_directory_avalanche = "Data/Aligned_avalanche"
 
 align_and_expand_avalanche_rasters(
     avalanche_dir, dem_file_path, aligned_and_filled_directory_avalanche
@@ -124,7 +124,7 @@ X_sar_train, X_sar_val, X_dem_train, X_dem_val, y_train, y_val = (
 
 import tensorflow as tf
 
-print(tf.__version__)
+
 
 
 def create_dataset(X_sar, X_dem, y, batch_size=32, shuffle=True):
@@ -226,7 +226,7 @@ plt.show()
 
 predictions = model.predict(test_dataset)
 
-
+'''
 # To do: augment chips
 augmented_chipped_pairs = augmentation(chipped_pairs)
 
@@ -255,13 +255,4 @@ for pair in paired_data:
                 (sar_patches[i, j], avalanche_patches[i, j], dem_patches[i, j])
             )
 
-
-# To do: Reshape and split data into Xy, train, val, test
-
-
-
-
-
-
-
-"""
+'''
